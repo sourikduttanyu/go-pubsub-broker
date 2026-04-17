@@ -1,0 +1,11 @@
+# Compiled binaries
+broker
+*.exe
+*.out
+
+# Test cache
+*.test
+
+# Go workspace
+go.work
+go.work.sum
