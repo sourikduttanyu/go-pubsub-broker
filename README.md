@@ -76,7 +76,7 @@ Per subscription — one long-lived deliveryLoop goroutine:
 - **Configurable retry** — max attempts, per-attempt timeout
 - **Dead-letter queue** — per-topic DLQ with Entries / Drain API
 - **Graceful shutdown** — `Shutdown(ctx)` drains all delivery loops via WaitGroup
-- **CLI** — `demo`, `publish`, `subscribe`, `dlq` commands
+- **CLI** — `visual` (live TUI dashboard), `demo`, `publish`, `subscribe`, `dlq` commands
 
 ---
 
@@ -85,6 +85,57 @@ Per subscription — one long-lived deliveryLoop goroutine:
 ```bash
 go install github.com/sourik/go-pubsub-broker/cmd/broker@latest
 ```
+
+### Live TUI dashboard
+
+```bash
+# Default: 8 messages, 3 subscribers, 35% nack rate, max 3 attempts
+broker visual
+
+# Custom run
+broker visual --messages=10 --subs=4 --fail-rate=0.5 --max-attempts=4 --topic=payments
+```
+
+The `visual` command opens a full-screen terminal dashboard powered by [Bubbletea](https://github.com/charmbracelet/bubbletea) and [Lipgloss](https://github.com/charmbracelet/lipgloss):
+
+```
+  ⬡  go-pubsub-broker  ·  topic: events  ·  8 msgs  ·  fail-rate: 35%
+
+ ╭──────────────────────────────────────────────────────────────────╮
+ │ SUBSCRIBERS                                                       │
+ │                                                                   │
+ │  sub-1   [████████████░░░░░░░░]  inbox:12   ✓ 5    ↺ 2    ☠ 0   │
+ │  sub-2   [████░░░░░░░░░░░░░░░░]  inbox:4    ✓ 3    ↺ 4    ☠ 1   │
+ │  sub-3   [██████████░░░░░░░░░░]  inbox:10   ✓ 6    ↺ 1    ☠ 0   │
+ │                                                                   │
+ │  progress  ████████████████░░░░░░░░░░░░  18/24 delivered         │
+ │  published: 8   dlq total: 1   ● running                         │
+ ╰──────────────────────────────────────────────────────────────────╯
+
+ ╭──────────────────────────────────────────────────────────────────╮
+ │ EVENT LOG                                                         │
+ │                                                                   │
+ │   0.1s  sub-1     events-5        attempt 1/3    ✓ ACK           │
+ │   0.4s  sub-2     events-5        attempt 1/3    ↺ NACK  retry...│
+ │   0.7s  sub-3     events-4        attempt 2/3    ✓ ACK           │
+ │   1.1s  sub-2     events-5        attempt 2/3    ✓ ACK           │
+ │   ...                                                             │
+ ╰──────────────────────────────────────────────────────────────────╯
+
+  q / ctrl+c  exit
+```
+
+Press `q` or `ctrl+c` to exit.
+
+| Flag | Default | Description |
+|---|---|---|
+| `--messages` / `-m` | `8` | Number of messages to publish |
+| `--subs` / `-s` | `3` | Number of subscribers |
+| `--fail-rate` / `-f` | `0.35` | Probability a delivery attempt is nack'd |
+| `--max-attempts` / `-a` | `3` | Max attempts before DLQ |
+| `--topic` / `-t` | `events` | Topic name |
+
+---
 
 ### Run the demo
 
