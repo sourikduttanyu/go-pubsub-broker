@@ -225,12 +225,12 @@ Fan-out cost scales linearly with subscriber count (~2.6 µs per additional 10 s
 | Delivery guarantee | At-least-once | At-least-once |
 | Retry mechanism | Fixed N attempts | Exponential backoff (10s–600s) |
 | Dead-letter queue | Per-topic, in-memory | Per-subscription, durable |
-| Message ordering | Not guaranteed | Optional ordering keys |
+| Message ordering | Not guaranteed (work in progress) | Optional ordering keys |
 | Fan-out model | Goroutine + channel | Distributed push/pull |
 | Persistence | In-memory only | Durable (Bigtable-backed) |
 | Throughput (single sub) | ~1.5M msg/s | ~1M msg/s (pull mode) |
-| ACK timeout | Configurable | 10s–600s |
-| Subscription filter | Not implemented | Server-side CEL filter |
+| ACK timeout | 10s (configurable) | 10s–600s |
+| Subscription filter | Not implemented (future work) | Server-side CEL filter |
 | Flow control | Inbox buffer (drop or block) | Client-side lease extension |
 
 The core delivery contract — fan-out to all subscriptions, hold a message until Ack, retry on Nack or timeout, DLQ after N failures — is identical. What's missing is persistence, network transport, and the operational features (snapshot/seek, filtering, push endpoints) that make it a managed service.
