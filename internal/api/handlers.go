@@ -3,8 +3,11 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/sourik/go-pubsub-broker/internal/broker"
+	"github.com/sourik/go-pubsub-broker/internal/store"
 )
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
@@ -47,12 +50,58 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body", "BAD_REQUEST")
 		return
 	}
+	publishedAt := time.Now()
 	id, err := s.client.Publish(topic, req.Data, req.Attributes)
+	metricPublishDuration.WithLabelValues(topic).Observe(time.Since(publishedAt).Seconds())
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error(), "NOT_FOUND")
 		return
 	}
+	metricMessagesPublished.WithLabelValues(topic).Inc()
+	if serr := s.store.AppendMessage(store.Message{
+		ID:          string(id),
+		Topic:       topic,
+		Data:        req.Data,
+		Attributes:  req.Attributes,
+		PublishedAt: publishedAt,
+	}); serr != nil {
+		metricStoreErrors.Inc()
+	}
 	writeJSON(w, http.StatusOK, publishResponse{MessageID: string(id)})
+}
+
+func (s *Server) handleGetMessages(w http.ResponseWriter, r *http.Request) {
+	topic := r.PathValue("id")
+	limit := 100
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if n, err := strconv.Atoi(l); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	msgs, err := s.store.LoadMessages(topic, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error(), "INTERNAL")
+		return
+	}
+	out := make([]pulledMessage, len(msgs))
+	for i, m := range msgs {
+		out[i] = pulledMessage{
+			MessageID:   m.ID,
+			Topic:       m.Topic,
+			Data:        m.Data,
+			Attributes:  m.Attributes,
+			PublishedAt: m.PublishedAt,
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) handleGetSubscribers(w http.ResponseWriter, r *http.Request) {
+	topic := r.PathValue("id")
+	writeJSON(w, http.StatusOK, map[string]any{
+		"topic":       topic,
+		"subscribers": s.hubCount(topic),
+	})
 }
 
 func (s *Server) handleCreateSubscription(w http.ResponseWriter, r *http.Request) {

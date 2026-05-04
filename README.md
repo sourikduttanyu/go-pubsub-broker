@@ -1,6 +1,6 @@
-# go-pubsub-broker
+# go-pubsub-server
 
-A lightweight in-memory pub/sub broker written in Go. Implements the core delivery semantics of Google Cloud Pub/Sub: topics, per-subscription fan-out, **at-least-once delivery** with configurable retries, and a **dead-letter queue** (DLQ) for messages that exhaust all delivery attempts.
+A pub/sub broker and HTTP/WebSocket server written in Go. Implements the core delivery semantics of Google Cloud Pub/Sub — topics, per-subscription fan-out, **at-least-once delivery** with configurable retries, and a **dead-letter queue** — and exposes them over a REST + WebSocket API with Bearer token auth, per-key rate limiting, Prometheus metrics, and optional PostgreSQL persistence.
 
 Built to understand the architecture from the inside — not just use the API.
 
@@ -76,7 +76,15 @@ Per subscription — one long-lived deliveryLoop goroutine:
 - **Configurable retry** — max attempts, per-attempt timeout
 - **Dead-letter queue** — per-topic DLQ with Entries / Drain API
 - **Graceful shutdown** — `Shutdown(ctx)` drains all delivery loops via WaitGroup
+- **REST API** — full CRUD over HTTP with JSON (`broker serve`)
+- **WebSocket push** — `ws://host/topics/{topic}/subscribe` streams messages in real time
+- **Message history** — `GET /topics/{topic}/messages` returns recent messages (ring buffer or PostgreSQL)
+- **Auth** — `Authorization: Bearer <key>` gating on all routes (`BROKER_API_KEY` env var)
+- **Rate limiting** — token bucket per API key (`--rate-limit <rps>`)
+- **PostgreSQL persistence** — opt-in via `--persist <dsn>`; in-memory stays the default
+- **Prometheus metrics** — `GET /metrics` (publish rate, WS subscribers, publish latency, store errors)
 - **CLI** — `visual` (live TUI dashboard), `demo`, `publish`, `subscribe`, `dlq` commands
+- **Go client SDK** — `pkg/pubsubclient` HTTP client mirroring the in-process API
 
 ---
 
@@ -85,6 +93,81 @@ Per subscription — one long-lived deliveryLoop goroutine:
 ```bash
 go install github.com/sourik/go-pubsub-broker/cmd/broker@latest
 ```
+
+### HTTP + WebSocket server
+
+```bash
+# Requires an API key
+export BROKER_API_KEY=secret
+
+# In-memory store (default)
+broker serve --addr :8080
+
+# PostgreSQL persistence
+broker serve --addr :8080 --persist "postgres://user:pass@localhost/mydb"
+
+# Rate-limit to 100 publish requests/sec per API key
+broker serve --addr :8080 --rate-limit 100
+```
+
+**REST endpoints** (all require `Authorization: Bearer <key>`):
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/topics` | Create topic |
+| `GET` | `/topics` | List topics |
+| `DELETE` | `/topics/{topic}` | Delete topic |
+| `POST` | `/topics/{topic}/publish` | Publish message |
+| `GET` | `/topics/{topic}/messages` | Message history (`?limit=100`) |
+| `GET` | `/topics/{topic}/subscribers` | Active WebSocket subscriber count |
+| `GET` | `/topics/{topic}/dlq` | DLQ entries |
+| `DELETE` | `/topics/{topic}/dlq` | Drain DLQ |
+| `POST` | `/subscriptions` | Create pull subscription |
+| `DELETE` | `/subscriptions/{id}` | Delete subscription |
+| `POST` | `/subscriptions/{id}/pull` | Pull messages |
+| `GET` | `/healthz` | Health check (no auth) |
+| `GET` | `/metrics` | Prometheus metrics (no auth) |
+
+**WebSocket** — real-time push (requires auth header on the upgrade request):
+
+```bash
+# wscat example
+wscat -H "Authorization: Bearer secret" -c ws://localhost:8080/topics/payments/subscribe
+```
+
+Each published message arrives as a JSON frame:
+
+```json
+{
+  "id": "01JWXYZ...",
+  "topic": "payments",
+  "data": "eyJhbW91bnQiOjQyfQ==",
+  "attributes": {"env": "prod"},
+  "published_at": "2026-05-04T12:00:00Z"
+}
+```
+
+**Go client SDK** (`pkg/pubsubclient`):
+
+```go
+c, _ := pubsubclient.New(pubsubclient.Config{
+    BaseURL: "http://localhost:8080",
+    APIKey:  "secret",
+})
+
+_ = c.CreateTopic(ctx, "payments")
+id, _ := c.Publish(ctx, "payments", []byte(`{"amount":42}`), nil)
+
+// Pull-based
+msgs, _ := c.Pull(ctx, "invoices", 10)
+
+// Streaming poll loop
+c.Subscribe(ctx, "invoices", 500*time.Millisecond, func(m pubsubclient.PulledMessage) {
+    fmt.Println(string(m.Data))
+})
+```
+
+---
 
 ### Live TUI dashboard
 
@@ -241,21 +324,43 @@ The core delivery contract — fan-out to all subscriptions, hold a message unti
 
 ```
 cmd/broker/          CLI entry point (cobra)
+  ├── serve.go       HTTP + WebSocket server command
   ├── demo.go        interactive feature demonstration
-  ├── publish.go     publish subcommand + subscribe subcommand
-  ├── subscribe.go   subscribe flag registration
-  └── dlq.go         dlq list/drain subcommands
+  ├── publish.go     publish subcommand
+  ├── subscribe.go   subscribe subcommand
+  ├── dlq.go         dlq list/drain subcommands
+  └── tui.go         live TUI dashboard (visual command)
 
 internal/
   ├── broker/
-  │   ├── message.go       Message, AckToken, DeliveryAttempt
+  │   ├── message.go       Message (ULID IDs), AckToken, DeliveryAttempt
   │   ├── subscription.go  Subscription, deliveryLoop, retry logic
   │   ├── topic.go         Topic, fanOut, subscribe/unsubscribe
   │   ├── broker.go        Broker registry, Publish, Shutdown
   │   └── dlq.go           DeadLetterQueue
-  └── config/config.go     Config with defaults
+  ├── api/
+  │   ├── server.go        HTTP server, route registration, Options
+  │   ├── handlers.go      One handler per endpoint
+  │   ├── ws.go            WebSocket hub, ping/pong, fan-out subscription
+  │   ├── pullbuffer.go    Per-subscription buffered channels for pull API
+  │   ├── middleware.go    Bearer token auth + rate limiting
+  │   ├── ratelimit.go     Token bucket per API key
+  │   ├── metrics.go       Prometheus counters / gauges / histograms
+  │   ├── types.go         JSON request/response structs
+  │   └── errors.go        JSON error envelope helpers
+  ├── store/
+  │   ├── store.go         Store interface
+  │   ├── memory.go        In-memory ring buffer (default)
+  │   └── postgres.go      PostgreSQL via pgx/v5 (opt-in with --persist)
+  └── config/config.go     Broker config with defaults
 
-pkg/pubsub/client.go     Stable public API (mirrors cloud.google.com/go/pubsub shape)
+pkg/
+  ├── pubsub/client.go       In-process API (mirrors cloud.google.com/go/pubsub)
+  └── pubsubclient/          HTTP client SDK
+      ├── client.go          CRUD + Publish + Pull + DLQ methods
+      ├── pull.go            Polling Subscribe loop with backoff
+      ├── types.go           PulledMessage, DLQEntry
+      └── errors.go          Typed APIError
 
 bench/               Throughput benchmarks (go test -bench=.)
 test/                Integration tests (at-least-once contract, DLQ scenarios)
