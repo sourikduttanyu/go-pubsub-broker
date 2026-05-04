@@ -10,6 +10,11 @@ type Config struct {
 	DropOnFull          bool // if true, fanOut drops msg when inbox is full; if false, blocks
 }
 
+type ServerConfig struct {
+	Addr   string // e.g. ":8080"
+	APIKey string // sourced from BROKER_API_KEY env var
+}
+
 func Default() *Config {
 	return &Config{
 		MaxDeliveryAttempts: 5,

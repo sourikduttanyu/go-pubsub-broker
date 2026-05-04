@@ -3,8 +3,8 @@ package broker
 import (
 	"fmt"
 	"sync"
-	"sync/atomic"
 
+	"github.com/oklog/ulid/v2"
 	"github.com/sourik/go-pubsub-broker/internal/config"
 )
 
@@ -13,7 +13,6 @@ type Topic struct {
 	mu            sync.RWMutex
 	subscriptions map[SubscriptionID]*Subscription
 	dlq           *DeadLetterQueue
-	msgSeq        atomic.Uint64
 	cfg           *config.Config
 	wg            *sync.WaitGroup
 }
@@ -69,8 +68,7 @@ func (t *Topic) fanOut(msg *Message) {
 }
 
 func (t *Topic) nextMsgID() MessageID {
-	seq := t.msgSeq.Add(1)
-	return MessageID(fmt.Sprintf("%s-%d", t.Name, seq))
+	return MessageID(ulid.Make().String())
 }
 
 func (t *Topic) shutdown() {
